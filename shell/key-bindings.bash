@@ -40,7 +40,7 @@ fzf-file-widget() {
   else
     local selected="$(__fzf_select__)"
     READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$selected${READLINE_LINE:$READLINE_POINT}"
-    READLINE_POINT=$(( READLINE_POINT + ${#selected} ))
+    READLINE_POINT=$(( READLINE_POINT + ${#selected} - 3 ))
   fi
 }
 
@@ -51,36 +51,74 @@ __fzf_cd__() {
   dir=$(eval "$cmd" | FZF_DEFAULT_OPTS="--height ${FZF_TMUX_HEIGHT:-40%} --reverse $FZF_DEFAULT_OPTS $FZF_ALT_C_OPTS" $(__fzfcmd) +m) && printf 'cd %q' "$dir"
 }
 
-__fzf_history__() (
-  local line
+__fzf_history_3__() (
+  local out line
   shopt -u nocaseglob nocasematch
-  line=$(
-    HISTTIMEFORMAT= builtin history |
-    FZF_DEFAULT_OPTS="--height ${FZF_TMUX_HEIGHT:-40%} $FZF_DEFAULT_OPTS --tac --sync -n2..,.. --tiebreak=index --bind=ctrl-r:toggle-sort $FZF_CTRL_R_OPTS +m" $(__fzfcmd) |
-    command grep '^ *[0-9]') &&
-    if [[ $- =~ H ]]; then
-      sed 's/^ *\([0-9]*\)\** .*/!\1/' <<< "$line"
-    else
-      sed 's/^ *\([0-9]*\)\** *//' <<< "$line"
-    fi
+  out="$(
+    HISTTIMEFORMAT= history | sed 's/^\s*[0-9]*\s*//g' |
+    FZF_DEFAULT_OPTS="--height ${FZF_TMUX_HEIGHT:-40%} $FZF_DEFAULT_OPTS --tac --sync --tiebreak=index --expect=ENTER,ESC,HOME,END,LEFT,RIGHT --bind=ctrl-r:toggle-sort $FZF_CTRL_R_OPTS +m" $(__fzfcmd)
+  )"
+  line="$(tail -n+2 <<< "$out")"
+  if [[ ! -z "$line" ]] && [[ "$(head -n1 <<< "$out")" == "ENTER" ]]; then
+    history -s "$line"
+    # print a newline as if ENTER had actually been pressed
+    echo "${PS1@P}$line" > /dev/tty
+    eval $line &> /dev/tty
+  else
+    echo "$line"
+  fi
 )
+
+fzf-history-run() {
+  local out line key
+  shopt -u nocaseglob nocasematch
+  out="$(
+    HISTTIMEFORMAT= history | sed 's/^\s*[0-9]*\s*//g' |
+    FZF_DEFAULT_OPTS="--height ${FZF_TMUX_HEIGHT:-40%} $FZF_DEFAULT_OPTS --tac --sync --tiebreak=index --expect=ENTER,ESC,HOME,END,LEFT,RIGHT --bind=ctrl-r:toggle-sort $FZF_CTRL_R_OPTS +m" $(__fzfcmd)
+  )"
+
+  line="$(tail -n+2 <<< "$out")"
+  if [[ -z "$line" ]]; then
+    return
+  fi
+
+  key="$(head -n1 <<< "$out")"
+  if [[ "$key" == "ENTER" ]]; then
+    history -s "$line"
+    echo "${PS1@P}$line"
+    eval "$line"
+    return
+  else
+    #READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$line${READLINE_LINE:$READLINE_POINT}"
+    READLINE_LINE="$line"
+    if [[ "$key" == "LEFT" ]]; then
+      READLINE_POINT=$(( READLINE_POINT + ${#line} - 1 ))
+    elif [[ "$key" != "HOME" ]]; then
+      READLINE_POINT=$(( READLINE_POINT + ${#line} ))
+    fi
+  fi
+}
 
 if [[ ! -o vi ]]; then
   # Required to refresh the prompt after fzf
   bind '"\er": redraw-current-line'
   bind '"\e^": history-expand-line'
 
-  # CTRL-T - Paste the selected file path into the command line
   if [ $BASH_VERSINFO -gt 3 ]; then
+    # CTRL-T - Paste the selected file path into the command line
     bind -x '"\C-t": "fzf-file-widget"'
-  elif __fzf_use_tmux__; then
-    bind '"\C-t": " \C-u \C-a\C-k`__fzf_select_tmux__`\e\C-e\C-y\C-a\C-d\C-y\ey\C-h"'
-  else
-    bind '"\C-t": " \C-u \C-a\C-k`__fzf_select__`\e\C-e\C-y\C-a\C-y\ey\C-h\C-e\er \C-h"'
-  fi
 
-  # CTRL-R - Paste the selected command from history into the command line
-  bind '"\C-r": " \C-e\C-u\C-y\ey\C-u`__fzf_history__`\e\C-e\er\e^"'
+    # CTRL-R - Paste the selected command from history into the command line
+    bind -x '"\C-r": "fzf-history-run"'
+  else
+    if __fzf_use_tmux__; then
+      bind '"\C-t": " \C-u \C-a\C-k`__fzf_select_tmux__`\e\C-e\C-y\C-a\C-d\C-y\ey\C-h"'
+    else
+      bind '"\C-t": " \C-u \C-a\C-k`__fzf_select__`\e\C-e\C-y\C-a\C-y\ey\C-h\C-e\er \C-h"'
+    fi
+
+    bind '"\C-r": " \C-e\C-u\C-y\ey\C-u`__fzf_history_3__`\e\C-e\er\e^"'
+  fi
 
   # ALT-C - cd into the selected directory
   bind '"\ec": " \C-e\C-u`__fzf_cd__`\e\C-e\er\C-m"'
